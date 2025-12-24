@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Christmas Magic Tree</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: #000;
+            font-family: Arial
+        }
+
+        #canvas-container {
+            width: 100vw;
+            height: 100vh;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1
+        }
+
+        #video-input {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 640px;
+            height: 480px;
+            opacity: 0;
+            z-index: -10;
+            pointer-events: none
+        }
+
+        #status-pill {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            padding: 8px 16px;
+            background: rgba(20, 20, 20, .8);
+            border: 1px solid rgba(255, 215, 0, .3);
+            border-radius: 20px;
+            color: #ffd700;
+            font-size: 13px;
+            z-index: 10;
+            backdrop-filter: blur(4px);
+            transition: .3s
+        }
+
+        #christmas-text {
+            position: absolute;
+            top: 15%;
+            left: 50%;
+            transform: translate(-50%, -50%) scale(.5);
+            font-size: 4rem;
+            font-weight: 900;
+            color: #ffd700;
+            text-shadow: 0 0 20px #ffd700, 0 0 40px #ff4500;
+            z-index: 5;
+            opacity: 0;
+            transition: .4s ease-out;
+            pointer-events: none;
+            white-space: nowrap;
+            font-family: serif
+        }
+
+        #debug-dot {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            width: 12px;
+            height: 12px;
+            background: #ffd700;
+            border-radius: 50%;
+            box-shadow: 0 0 15px #ffd700;
+            z-index: 10;
+            opacity: .1;
+            transition: .2s
+        }
+
+        #startBtn {
+            position: absolute;
+            z-index: 20;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            padding: 12px 24px;
+            font-size: 18px;
+            background: #ffd700;
+            color: #000;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js"
+            crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+<div id="status-pill">系统初始化... (请允许摄像头权限)</div>
+<div id="debug-dot"></div>
+<h1 id="christmas-text">MERRY CHRISTMAS</h1>
+<video id="video-input" playsinline muted autoplay></video>
+<div id="canvas-container"></div>
+<button id="startBtn">点开摄像头</button>
+
+<script>
+    const CONFIG = {particleCount: 8000, particleColor: 0xFFD700, bgColor: 0x000000, treeLevels: 10, boxSize: 0.65};
+    let scene, camera, renderer, giftTreeGroup, starMesh, starGlow, particleSystem, openness = 0, currentOpenness = 0,
+        isHandDetected = false;
+
+    window.onload = () => {
+        initThreeJS();
+        document.getElementById('startBtn').addEventListener('click', () => {
+            document.getElementById('startBtn').style.display = 'none';
+            startCameraApp();
+        });
+        animate();
+    };
+
+    function initThreeJS() {
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(CONFIG.bgColor);
+        scene.fog = new THREE.FogExp2(CONFIG.bgColor, .02);
+        camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, .1, 1e3);
+        camera.position.set(0, 5, 25);
+        camera.lookAt(0, 2, 0);
+        renderer = new THREE.WebGLRenderer({antialias: true, alpha: false});
+        renderer.setSize(innerWidth, innerHeight);
+        renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+        document.getElementById('canvas-container').appendChild(renderer.domElement);
+        scene.add(new THREE.AmbientLight(0xffffff, .4));
+        const dirLight = new THREE.DirectionalLight(0xffd700, 1.2);
+        dirLight.position.set(10, 20, 10);
+        dirLight.castShadow = true;
+        scene.add(dirLight);
+        createGiftTree();
+        createParticles();
+        addEventListener('resize', () => {
+            camera.aspect = innerWidth / innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(innerWidth, innerHeight);
+        });
+    }
+
+    function createRibbonTexture(c) {
+        const a = document.createElement('canvas');
+        a.width = 64;
+        a.height = 64;
+        const b = a.getContext('2d');
+        b.fillStyle = '#' + new THREE.Color(c).getHexString();
+        b.fillRect(0, 0, 64, 64);
+        b.fillStyle = '#FFD700';
+        b.fillRect(28, 0, 8, 64);
+        b.fillRect(0, 28, 64, 8);
+        return new THREE.MeshStandardMaterial({map: new THREE.CanvasTexture(a), roughness: .4});
+    }
+
+    function createGiftTree() {
+        giftTreeGroup = new THREE.Group();
+        const cols = [0xB22222, 0x006400, 0xFFFFFF, 0xDAA520], mats = cols.map(c => createRibbonTexture(c)),
+            geom = new THREE.BoxGeometry(1, 1, 1);
+        let y = 0;
+        for (let i = 0; i < CONFIG.treeLevels; i++) {
+            const p = i / CONFIG.treeLevels, r = 4.5 * (1 - p) + .1, s = CONFIG.boxSize * (1 - p * .3),
+                cnt = Math.max(1, Math.floor(2 * Math.PI * r / (s * 1.2)));
+            if (i === CONFIG.treeLevels - 1) {
+                const box = new THREE.Mesh(geom, mats[3]);
+                box.position.set(0, y, 0);
+                box.scale.setScalar(s);
+                box.castShadow = true;
+                giftTreeGroup.add(box);
+            } else for (let j = 0; j < cnt; j++) {
+                const ang = j / cnt * Math.PI * 2 + i * .5,
+                    box = new THREE.Mesh(geom, mats[Math.floor(Math.random() * mats.length)]);
+                box.position.set(Math.cos(ang) * r + (Math.random() - .5) * .1, y, Math.sin(ang) * r + (Math.random() - .5) * .1);
+                box.rotation.set(Math.random() * .2, ang + Math.random(), Math.random() * .2);
+                box.scale.setScalar(s);
+                box.castShadow = box.receiveShadow = true;
+                giftTreeGroup.add(box);
+            }
+            y += s * .95;
+        }
+        starMesh = new THREE.Mesh(new THREE.OctahedronGeometry(.8, 0), new THREE.MeshBasicMaterial({color: 0xFFFF00}));
+        starMesh.position.y = y + .5;
+        giftTreeGroup.add(starMesh);
+        const c = document.createElement('canvas');
+        c.width = 64;
+        c.height = 64;
+        const g = c.getContext('2d'), gr = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+        gr.addColorStop(0, 'rgba(255,215,0,1)');
+        gr.addColorStop(1, 'rgba(0,0,0,0)');
+        g.fillStyle = gr;
+        g.fillRect(0, 0, 64, 64);
+        starGlow = new THREE.Sprite(new THREE.SpriteMaterial({
+            map: new THREE.CanvasTexture(c),
+            color: 0xffaa00,
+            blending: THREE.AdditiveBlending
+        }));
+        starGlow.scale.set(6, 6, 1);
+        starMesh.add(starGlow);
+        giftTreeGroup.position.y = -y / 2;
+        scene.add(giftTreeGroup);
+    }
+
+    function createParticles() {
+        const geom = new THREE.BufferGeometry(), pos = [], sizes = [], vels = [];
+        for (let i = 0; i < CONFIG.particleCount; i++) {
+            pos.push((Math.random() - .5) * 120, (Math.random() - .5) * 80, (Math.random() - .5) * 80);
+            sizes.push(Math.random() * .6 + .1);
+            vels.push(Math.random());
+        }
+        geom.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+        geom.setAttribute('size', new THREE.Float32BufferAttribute(sizes, 1));
+        geom.setAttribute('velocity', new THREE.Float32BufferAttribute(vels, 1));
+        const canvas = document.createElement('canvas');
+        canvas.width = 32;
+        canvas.height = 32;
+        const ctx = canvas.getContext('2d'), gradient = ctx.createRadialGradient(16, 16, 0, 16, 16, 16);
+        gradient.addColorStop(0, 'rgba(255,255,255,1)');
+        gradient.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = gradient;
+        ctx.fillRect(0, 0, 32, 32);
+        particleSystem = new THREE.Points(geom, new THREE.PointsMaterial({
+            color: CONFIG.particleColor,
+            size: .5,
+            map: new THREE.CanvasTexture(canvas),
+            transparent: true,
+            opacity: .9,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            sizeAttenuation: true
+        }));
+        scene.add(particleSystem);
+    }
+
+    function startCameraApp() {
+        const video = document.getElementById('video-input'), status = document.getElementById('status-pill'),
+            dot = document.getElementById('debug-dot');
+        const hands = new Hands({locateFile: (f) => 'https://cdn.jsdelivr.net/npm/@mediapipe/hands/' + f});
+        hands.setOptions({maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: .5, minTrackingConfidence: .5});
+        hands.onResults((results) => {
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                if (!isHandDetected) {
+                    status.innerText = '系统正常：手势已连接';
+                    status.style.borderColor = status.style.color = '#00FF00';
+                    dot.style.opacity = 1;
+                    isHandDetected = true;
+                }
+                const lm = results.multiHandLandmarks[0], dist = Math.hypot(lm[4].x - lm[8].x, lm[4].y - lm[8].y);
+                dot.style.transform = `scale(${1 + dist * 8})`;
+                const val = (dist - .03) * 6;
+                openness = Math.max(0, Math.min(1, val));
+            } else {
+                if (isHandDetected) {
+                    status.innerText = '待机：请在镜头前张开手';
+                    status.style.borderColor = 'rgba(255,215,0,.3)';
+                    status.style.color = '#FFD700';
+                    dot.style.opacity = .1;
+                    isHandDetected = false;
+                }
+                openness = 0;
+            }
+        });
+        const camera = new Camera(video, {
+            onFrame: async () => {
+                await hands.send({image: video})
+            }, width: 640, height: 480
+        });
+        camera.start().then(() => {
+            status.innerText = '摄像已启动，请展示手势';
+        }).catch(err => {
+            let msg = '';
+            switch (err.name) {
+                case'NotAllowedError':
+                    msg = '摄像头权限被禁用：请在系统设置中允许本站点使用相机，并用系统浏览器（Safari/Chrome）重新打开。';
+                    break;
+                case'NotFoundError':
+                    msg = '未检测到摄像头，请确认设备是否有相机。';
+                    break;
+                case'NotReadableError':
+                    msg = '摄像头被其他应用占用，请关闭后台可能使用相机的 App 后再试。';
+                    break;
+                default:
+                    msg = '无法访问摄像头，请确保使用 HTTPS 并用系统浏览器打开。';
+            }
+            status.innerText = '错误: ' + msg;
+            status.style.color = 'red';
+        });
+    }
+
+    function animate() {
+        requestAnimationFrame(animate);
+        const t = Date.now() * .001;
+        currentOpenness += (openness - currentOpenness) * .1;
+        if (giftTreeGroup) {
+            giftTreeGroup.rotation.y = t * .2;
+            if (currentOpenness > .1) {
+                giftTreeGroup.rotation.y += currentOpenness * .3;
+                const s = 1 + currentOpenness * .15;
+                giftTreeGroup.scale.set(s, s, s);
+            } else giftTreeGroup.scale.lerp(new THREE.Vector3(1, 1, 1), .1);
+        }
+        if (starMesh) {
+            starMesh.rotation.y -= .05;
+            const gs = 6 + Math.sin(t * 3) + currentOpenness * 5;
+            starGlow.scale.set(gs, gs, 1);
+        }
+        if (particleSystem) {
+            const pos = particleSystem.geometry.attributes.position.array,
+                vels = particleSystem.geometry.attributes.velocity.array;
+            for (let i = 0; i < pos.length; i += 3) {
+                const idx = i / 3;
+                let vy = -vels[idx] * .03;
+                if (currentOpenness > .1) vy = vels[idx] * .5 * currentOpenness;
+                pos[i + 1] += vy;
+                if (pos[i + 1] < -40) pos[i + 1] = 40;
+                if (pos[i + 1] > 40) pos[i + 1] = -40;
+                pos[i] += Math.sin(t + idx) * .015;
+            }
+            particleSystem.geometry.attributes.position.needsUpdate = true;
+        }
+        const txt = document.getElementById('christmas-text');
+        if (currentOpenness > .6) {
+            txt.style.opacity = 1;
+            txt.style.transform = `translate(-50%,-50%) scale(${1 + currentOpenness * .2})`;
+        } else {
+            txt.style.opacity = 0;
+            txt.style.transform = 'translate(-50%,-50%) scale(.5)';
+        }
+        renderer.render(scene, camera);
+    }
+</script>
+</body>
+</html>
